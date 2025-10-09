@@ -27,24 +27,24 @@ class PositionEmbeddingSine(nn.Module):
 
     def forward(self, tensor_list: NestedTensor):
         x = tensor_list.tensors
-        mask = tensor_list.mask
+        mask = tensor_list.mask # shape: [batch_size, 36, 24]
         assert mask is not None
         not_mask = ~mask
-        y_embed = not_mask.cumsum(1, dtype=torch.float32)
-        x_embed = not_mask.cumsum(2, dtype=torch.float32)
+        y_embed = not_mask.cumsum(1, dtype=torch.float32) # 按y方向累加，第1行全为1，第2行全为2,...,第n行全为n
+        x_embed = not_mask.cumsum(2, dtype=torch.float32) # 按x方向累加，第1列全为1，第2列全为2,...,第m列全为m
         if self.normalize:
             eps = 1e-6
-            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
-            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
+            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale # y_embed[:, -1:, :] 取出最后一行，全为n，即y向最大位置
+            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale # x_embed[:, :, -1:] 取出最后一列，全为m,即x向最大
 
         dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
-        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats) # 按公式计算10000**(2i)
 
-        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_x = x_embed[:, :, :, None] / dim_t # [1, 36, 24, 1] / [128]
         pos_y = y_embed[:, :, :, None] / dim_t
         pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
         pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
-        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2) # 考虑x和y两个方向的位置，将两个方向的位置编码concat起来, pos shape: [batch_size, 256, 36, 24]
         return pos
 
 

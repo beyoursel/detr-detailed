@@ -61,12 +61,12 @@ class BackboneBase(nn.Module):
         super().__init__()
         for name, parameter in backbone.named_parameters():
             if not train_backbone or 'layer2' not in name and 'layer3' not in name and 'layer4' not in name:
-                parameter.requires_grad_(False)
+                parameter.requires_grad_(False) # 仅训练resnet的后几层，浅层提取的是通用特征
         if return_interm_layers:
             return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
         else:
             return_layers = {'layer4': "0"}
-        self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
+        self.body = IntermediateLayerGetter(backbone, return_layers=return_layers) # 返回layer4的输出，model也截断到layer4输出
         self.num_channels = num_channels
 
     def forward(self, tensor_list: NestedTensor):
@@ -95,10 +95,10 @@ class Backbone(BackboneBase):
 
 class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
-        super().__init__(backbone, position_embedding)
+        super().__init__(backbone, position_embedding) # 传递给nn.Sequential，self[0]是backbone，self[1]为position_embedding
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self[0](tensor_list)
+        xs = self[0](tensor_list) # backbone推理，得到feature map [1, 2048, 36, 24]
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():

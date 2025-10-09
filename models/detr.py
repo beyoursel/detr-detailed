@@ -34,9 +34,9 @@ class DETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
-        self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
+        self.class_embed = nn.Linear(hidden_dim, num_classes + 1) # 加上背景类
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.query_embed = nn.Embedding(num_queries, hidden_dim) # 100个query，参数可训练
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
@@ -58,15 +58,15 @@ class DETR(nn.Module):
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        features, pos = self.backbone(samples) # pos为no-learning PE
 
-        src, mask = features[-1].decompose()
-        assert mask is not None
-        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
-
+        src, mask = features[-1].decompose() # 对nested_tensor解耦，mask均为false
+        assert mask is not None # 初始的self.query_embed.weight为均匀分布
+        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0] # self.input_proj对backbone输入的feature map进行降维
+        # hs为包含六个decoder layer的输出，前5个输出后续计算aux loss
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]} # 可选返回中间输出结果，即decoder的层数
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
         return out
@@ -77,7 +77,7 @@ class DETR(nn.Module):
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
         return [{'pred_logits': a, 'pred_boxes': b}
-                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
+                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])] # :-1表示decoder最后一层输出不考虑
 
 
 class SetCriterion(nn.Module):
@@ -102,7 +102,7 @@ class SetCriterion(nn.Module):
         self.eos_coef = eos_coef
         self.losses = losses
         empty_weight = torch.ones(self.num_classes + 1)
-        empty_weight[-1] = self.eos_coef
+        empty_weight[-1] = self.eos_coef # non-object的权重为0.1
         self.register_buffer('empty_weight', empty_weight)
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
@@ -112,13 +112,13 @@ class SetCriterion(nn.Module):
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
 
-        idx = self._get_src_permutation_idx(indices)
+        idx = self._get_src_permutation_idx(indices) # batch_id，pred_label
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=src_logits.device)
+                                    dtype=torch.int64, device=src_logits.device) # 默认每个pred匹配的为non-object label，因此设置为91
         target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight) # softmax+NLL(负对数似然)， (batch_size, num_obj, class_num), ()
         losses = {'loss_ce': loss_ce}
 
         if log:
@@ -135,8 +135,8 @@ class SetCriterion(nn.Module):
         device = pred_logits.device
         tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device)
         # Count the number of predictions that are NOT "no-object" (which is the last class)
-        card_pred = (pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1)
-        card_err = F.l1_loss(card_pred.float(), tgt_lengths.float())
+        card_pred = (pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1) # 非non-object的数量
+        card_err = F.l1_loss(card_pred.float(), tgt_lengths.float()) # 默认均值
         losses = {'cardinality_error': card_err}
         return losses
 
@@ -147,8 +147,8 @@ class SetCriterion(nn.Module):
         """
         assert 'pred_boxes' in outputs
         idx = self._get_src_permutation_idx(indices)
-        src_boxes = outputs['pred_boxes'][idx]
-        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        src_boxes = outputs['pred_boxes'][idx] # 取出matched pred boxes
+        target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0) # i: target indexes; 所有batch的pred boxes concat在一起
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
 
@@ -192,8 +192,8 @@ class SetCriterion(nn.Module):
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
-        src_idx = torch.cat([src for (src, _) in indices])
+        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)]) # batch_idx
+        src_idx = torch.cat([src for (src, _) in indices]) # pred
         return batch_idx, src_idx
 
     def _get_tgt_permutation_idx(self, indices):
@@ -204,9 +204,9 @@ class SetCriterion(nn.Module):
 
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
-            'labels': self.loss_labels,
+            'labels': self.loss_labels, # F.cross_entropy loss
             'cardinality': self.loss_cardinality,
-            'boxes': self.loss_boxes,
+            'boxes': self.loss_boxes, # l1 loss and giou loss
             'masks': self.loss_masks
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
@@ -229,7 +229,7 @@ class SetCriterion(nn.Module):
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_boxes)
-        num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+        num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item() # 通常在 分布式训练中归一化 loss，保证每个 GPU 的 loss 按目标数量平均
 
         # Compute all the requested losses
         losses = {}
@@ -249,7 +249,7 @@ class SetCriterion(nn.Module):
                         # Logging is enabled only for the last layer
                         kwargs = {'log': False}
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
-                    l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
+                    l_dict = {k + f'_{i}': v for k, v in l_dict.items()} # 记录decoder每个layer的loss
                     losses.update(l_dict)
 
         return losses
@@ -272,7 +272,7 @@ class PostProcess(nn.Module):
         assert target_sizes.shape[1] == 2
 
         prob = F.softmax(out_logits, -1)
-        scores, labels = prob[..., :-1].max(-1)
+        scores, labels = prob[..., :-1].max(-1) # 取出除最后一个（即 "no-object" 类）之外的所有类别的概率
 
         # convert to [x0, y0, x1, y1] format
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
@@ -310,7 +310,7 @@ def build(args):
     # you should pass `num_classes` to be 2 (max_obj_id + 1).
     # For more details on this, check the following discussion
     # https://github.com/facebookresearch/detr/issues/108#issuecomment-650269223
-    num_classes = 20 if args.dataset_file != 'coco' else 91
+    num_classes = 20 if args.dataset_file != 'coco' else 91 # coco的label中最大的class_id为90，0-90总共91个类
     if args.dataset_file == "coco_panoptic":
         # for panoptic, we just add a num_classes that is large enough to hold
         # max_obj_id + 1, but the exact value doesn't really matter
@@ -319,7 +319,7 @@ def build(args):
 
     backbone = build_backbone(args)
 
-    transformer = build_transformer(args)
+    transformer = build_transformer(args) # 8个attention head，注意position encoding
 
     model = DETR(
         backbone,

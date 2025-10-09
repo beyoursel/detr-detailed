@@ -52,13 +52,13 @@ def generalized_box_iou(boxes1, boxes2):
     assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
     iou, union = box_iou(boxes1, boxes2)
 
-    lt = torch.min(boxes1[:, None, :2], boxes2[:, :2])
-    rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:])
+    lt = torch.min(boxes1[:, None, :2], boxes2[:, :2]) # 左上角点
+    rb = torch.max(boxes1[:, None, 2:], boxes2[:, 2:]) # 右下角点
 
     wh = (rb - lt).clamp(min=0)  # [N,M,2]
-    area = wh[:, :, 0] * wh[:, :, 1]
+    area = wh[:, :, 0] * wh[:, :, 1] # 两个bbox外接矩形的面积
 
-    return iou - (area - union) / area
+    return iou - (area - union) / area # value range: [-1, 1]
 
 
 def masks_to_boxes(masks):

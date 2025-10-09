@@ -47,15 +47,15 @@ class Transformer(nn.Module):
     def forward(self, src, mask, query_embed, pos_embed):
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
-        src = src.flatten(2).permute(2, 0, 1)
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
-        mask = mask.flatten(1)
+        src = src.flatten(2).permute(2, 0, 1) # [hw, bs, c]
+        pos_embed = pos_embed.flatten(2).permute(2, 0, 1) # [hw, bs, c]
+        query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1) # [100, 256] --> [100, bs, 256s]
+        mask = mask.flatten(1) # [1, hw]
 
-        tgt = torch.zeros_like(query_embed)
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        tgt = torch.zeros_like(query_embed) # 初始化为0
+        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed) # 循环执行encoder layer
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
-                          pos=pos_embed, query_pos=query_embed)
+                          pos=pos_embed, query_pos=query_embed) # query_embed是可学习的
         return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w)
 
 
@@ -75,7 +75,7 @@ class TransformerEncoder(nn.Module):
 
         for layer in self.layers:
             output = layer(output, src_mask=mask,
-                           src_key_padding_mask=src_key_padding_mask, pos=pos)
+                           src_key_padding_mask=src_key_padding_mask, pos=pos) # PE始终为初始的PE，每个encoder layer都对q和k都增加PE
 
         if self.norm is not None:
             output = self.norm(output)
@@ -108,7 +108,7 @@ class TransformerDecoder(nn.Module):
                            memory_mask=memory_mask,
                            tgt_key_padding_mask=tgt_key_padding_mask,
                            memory_key_padding_mask=memory_key_padding_mask,
-                           pos=pos, query_pos=query_pos)
+                           pos=pos, query_pos=query_pos) # decoder不用masked-self-attention，直接预测num_query个目标
             if self.return_intermediate:
                 intermediate.append(self.norm(output))
 
@@ -116,7 +116,7 @@ class TransformerDecoder(nn.Module):
             output = self.norm(output)
             if self.return_intermediate:
                 intermediate.pop()
-                intermediate.append(output)
+                intermediate.append(output) # 最后一层执行了norm
 
         if self.return_intermediate:
             return torch.stack(intermediate)
@@ -151,12 +151,12 @@ class TransformerEncoderLayer(nn.Module):
                      src_mask: Optional[Tensor] = None,
                      src_key_padding_mask: Optional[Tensor] = None,
                      pos: Optional[Tensor] = None):
-        q = k = self.with_pos_embed(src, pos)
+        q = k = self.with_pos_embed(src, pos) # encoder输入的q和k均add位置编码PE, 不对value增加PE
         src2 = self.self_attn(q, k, value=src, attn_mask=src_mask,
-                              key_padding_mask=src_key_padding_mask)[0]
+                              key_padding_mask=src_key_padding_mask)[0] # 可见value没有PE
         src = src + self.dropout1(src2)
         src = self.norm1(src)
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src)))) # FFN
         src = src + self.dropout2(src2)
         src = self.norm2(src)
         return src
@@ -216,15 +216,15 @@ class TransformerDecoderLayer(nn.Module):
                      memory_key_padding_mask: Optional[Tensor] = None,
                      pos: Optional[Tensor] = None,
                      query_pos: Optional[Tensor] = None):
-        q = k = self.with_pos_embed(tgt, query_pos)
+        q = k = self.with_pos_embed(tgt, query_pos) # tgt初始为0，query_pos为可学习的PE
         tgt2 = self.self_attn(q, k, value=tgt, attn_mask=tgt_mask,
-                              key_padding_mask=tgt_key_padding_mask)[0]
+                              key_padding_mask=tgt_key_padding_mask)[0] # masked self-attention 
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
-        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
-                                   key=self.with_pos_embed(memory, pos),
-                                   value=memory, attn_mask=memory_mask,
-                                   key_padding_mask=memory_key_padding_mask)[0]
+        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos), # masked self-attention的输出为query，加上learning PE
+                                   key=self.with_pos_embed(memory, pos), # memory is the output of encoder
+                                   value=memory, attn_mask=memory_mask, # value without PE
+                                   key_padding_mask=memory_key_padding_mask)[0] # encoder-decoder中q使用decoder的query的PE，而encoder输出的key使用encoder的输入PE
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
